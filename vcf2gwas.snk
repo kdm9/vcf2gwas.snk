@@ -1,0 +1,176 @@
+from sys import exit
+import csv
+import gzip
+config=  {}
+config["pheno"]="input/phenotypes_pathogen.tsv"
+config["geno"]="input/bwa~Har527-3_final~all_har.filt-q30-exhet90-callrate90.onlychr.impute.pathonamed.vcf.gz"
+
+def WD(path):
+    return f"v2g.wd/{path}"
+
+class Phenotypes:
+    def __init__(self, xsvfile):
+        series = {}
+        with open(xsvfile) as fh:
+            dialect = "excel" if xsvfile.endswith(".csv") else "excel-tab"
+            for row in csv.DictReader(fh, dialect=dialect):
+                if not series: # first row, set up lists
+                    series = {k: list() for k in row}
+                for k, v in row.items():
+                    series[k].append(v)
+        self.indivs = series['indiv']
+        self.phenos = {k: {I: v[i] for i, I in enumerate(self.indivs) } for k, v in series.items() if k != 'indiv'}
+        #print(f"Parsed {len(self.indivs)} individuals and {len(self.phenos)} phenotypes")
+
+    def write_pheno(self, file, iorder=None, porder=None):
+        if iorder is None:
+            iorder = self.indivs
+        if porder is None:
+            porder = self.phenos
+        with open(file, "w") as fh:
+            print("fid", "iid", *list(self.phenos), sep="\t", file=fh)
+            for i in iorder:
+                print(i, i, *[self.phenos[n][i] for n in self.phenos], file=fh, sep="\t")
+
+    def rewrite_fam(self, famin, famout, porder=None):
+        with open(famin) as fh:
+            faml = fh.readlines()
+        if porder is None:
+            porder = self.phenos
+        with open(famout, "w") as fh:
+            for line in faml:
+                F = line.rstrip().split()
+                i = F[1]
+                print(*F[:5], *[self.phenos[n][i] for n in porder], file=fh, sep=" ")
+
+
+class Geno:
+    def __init__(self, vcf):
+        self.vcf = vcf
+        self.chroms = {}
+        with gzip.open(vcf, "rt") as fh:
+            for line in fh:
+                if not line.startswith("#"):
+                    break
+                if line.startswith("##contig="):
+                    chrom = re.search(r"ID=([^,]+)[,>]", line)
+                    if chrom:
+                        chrom = chrom.groups(1)
+                    length = re.search(r"length=(\d+)[,>]", line)
+                    if length:
+                        length = int(length.groups(1))
+                    if chrom:
+                        self.chroms[chrom] = length
+                if line.startswith("#CHROM"):
+                    self.indivs = line.rstrip().split("\t")[9:]
+
+
+PHENOTYPES=Phenotypes( config["pheno"] )
+INDS = PHENOTYPES.indivs
+PHENOS = list(PHENOTYPES.phenos)
+GENO = Geno(config["geno"])
+VCF_INDS = GENO.indivs
+if set(INDS) != set(VCF_INDS):
+    print("INDIVIDUALS MISMATCH!!")
+    print(INDS, VCF_INDS)
+    exit(1)
+
+
+rule all:
+    input:
+        #expand(WD("tmp/phenos/{pheno}.fam"), pheno=PHENOS),
+        #expand(WD("tmp/{pheno}/grm.cXX.txt"), pheno=PHENOS),
+        #WD("tmp/phenos.txt"),
+        WD("tmp/genotypes"),
+        WD("tmp/grm.cXX.txt"),
+        expand(WD("out/{pheno}.assoc.txt"), pheno=PHENOS),
+
+
+rule vcf2plink:
+    input:
+        vcf=config["geno"],
+    output:
+        bed=WD("tmp/genotypes.bed"),
+        badfam=WD("tmp/genotypes.badfam"),
+        prefix=WD("tmp/genotypes"),
+    threads: 1
+    log: 
+        WD("tmp/genotypes.bed.log")
+    shell:
+        "( plink"
+        "   --vcf {input.vcf}"
+        "   --out {output.prefix}"
+        "   --mind 1" # max indiv missing rate
+        "   --set-missing-var-ids '@:#$1,$2'"
+        "   --allow-extra-chr"
+        "   --allow-no-sex"
+        "   --double-id"
+        "   --make-bed"
+        "   --threads {threads}"
+        " && mv {output.prefix}.fam {output.prefix}.badfam"
+        " && touch {output.prefix})"
+        " >{log} 2>&1"
+
+rule update_fam:
+    input:
+        fam=WD("tmp/genotypes.badfam"),
+    output:
+        fam=WD("tmp/genotypes.fam"),
+    run:
+        PHENOTYPES.rewrite_fam(input.fam, output.fam, porder=PHENOS)
+        
+        "( plink"
+        "   --bfile {input.bfile}"
+        "   --make-bed"
+        "   --out {output.bfile}"
+        "   --pheno {input.fam}"
+        "   --allow-extra-chr"
+        "   --double-id"
+        "   --threads {threads}"
+        ")"# >{log} 2>&1"
+
+
+rule grm:
+    input:
+        bfile=WD("tmp/genotypes"),
+        fam=WD("tmp/genotypes.fam"),
+    output:
+        grm=WD("tmp/grm.cXX.txt")
+    params:
+        dir=lambda wc, input, output: Path(output.grm).parent
+    shell:
+        "gemma"
+        "   -bfile {input.bfile}"
+        "   -o grm"
+        "   -outdir {params.dir}"
+        "   -gk 1"
+
+
+rule lmm:
+    input:
+        bfile=WD("tmp/genotypes"),
+        fam=WD("tmp/genotypes.fam"),
+        grm=WD("tmp/grm.cXX.txt")
+    output:
+        assoc=WD("out/{pheno}.assoc.txt")
+    log:
+        WD("out/{pheno}.gemma.log")
+    params:
+        dir=lambda wc, input, output: Path(output.assoc).parent,
+        phenoi=lambda wc: PHENOS.index(wc.pheno)+1,
+    shell:
+        "gemma"
+        "   -bfile {input.bfile}"
+        "   -o {wildcards.pheno}"
+        "   -outdir {params.dir}"
+        "   -n {params.phenoi}"
+        "   -lmm 4"
+        "   -k {input.grm}"
+        ">{log} 2>&1"
+
+
+
+# Copyright 2024-2025 Kevin Murray/Gekkonid Scientific Pty. Ltd. 
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
