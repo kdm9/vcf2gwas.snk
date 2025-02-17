@@ -1,12 +1,14 @@
 from sys import exit
 import csv
 import gzip
-config=  {}
+config = {}
 config["pheno"]="input/phenotypes_pathogen.tsv"
 config["geno"]="input/bwa~Har527-3_final~all_har.filt-q30-exhet90-callrate90.onlychr.impute.pathonamed.vcf.gz"
 
 def WD(path):
     return f"v2g.wd/{path}"
+
+shell.prefix="export PATH=.opt/bin/;"
 
 class Phenotypes:
     def __init__(self, xsvfile):
@@ -55,10 +57,10 @@ class Geno:
                 if line.startswith("##contig="):
                     chrom = re.search(r"ID=([^,]+)[,>]", line)
                     if chrom:
-                        chrom = chrom.groups(1)
+                        chrom = chrom.group(1)  # Extract the first match
                     length = re.search(r"length=(\d+)[,>]", line)
                     if length:
-                        length = int(length.groups(1))
+                        length = int(length.group(1))  # Convert the first match to an integer
                     if chrom:
                         self.chroms[chrom] = length
                 if line.startswith("#CHROM"):
@@ -118,16 +120,6 @@ rule update_fam:
         fam=WD("tmp/genotypes.fam"),
     run:
         PHENOTYPES.rewrite_fam(input.fam, output.fam, porder=PHENOS)
-        
-        "( plink"
-        "   --bfile {input.bfile}"
-        "   --make-bed"
-        "   --out {output.bfile}"
-        "   --pheno {input.fam}"
-        "   --allow-extra-chr"
-        "   --double-id"
-        "   --threads {threads}"
-        ")"# >{log} 2>&1"
 
 
 rule grm:
@@ -152,9 +144,8 @@ rule lmm:
         fam=WD("tmp/genotypes.fam"),
         grm=WD("tmp/grm.cXX.txt")
     output:
-        assoc=WD("out/{pheno}.assoc.txt")
-    log:
-        WD("out/{pheno}.gemma.log")
+        assoc=WD("out/{pheno}.assoc.txt"),
+	log=WD("out/{pheno}.gemma.log"),
     params:
         dir=lambda wc, input, output: Path(output.assoc).parent,
         phenoi=lambda wc: PHENOS.index(wc.pheno)+1,
@@ -165,9 +156,30 @@ rule lmm:
         "   -outdir {params.dir}"
         "   -n {params.phenoi}"
         "   -lmm 4"
+        "   -miss 0.1"
         "   -k {input.grm}"
-        ">{log} 2>&1"
+        ">{output.log} 2>&1"
 
+
+rule heritability_table:
+    input:
+        expand(WD("out/{pheno}.assoc.txt"), pheno=PHENOS),
+    output: WD("out/trait_pves.tsv")
+    run:
+        pves = {}        
+        for logfile in input:
+            pheno = re.sub(r".*/(.+)\.assoc.txt", r"\1", logfile)
+            pve=""
+            with open(logfile, encoding="utf-8") as fh:
+                for line in fh:
+                    m = re.match(r"pve estimate = (.+)", line.rstrip())
+                    if m:
+                        pve = float(m.group(1))
+            pves[pheno] = pve
+        with open(output[0], "w") as fh:
+            print("pheno", "pve", sep="\t", file=fh)
+            for pheno, pve in pves.items():
+                print(pheno, pve, sep="\t", file=fh)
 
 
 # Copyright 2024-2025 Kevin Murray/Gekkonid Scientific Pty. Ltd. 
