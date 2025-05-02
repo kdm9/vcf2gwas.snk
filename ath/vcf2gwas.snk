@@ -1,0 +1,196 @@
+from sys import exit
+import csv
+import gzip
+config = {}
+config["pheno"]="simulated_phenotypes.tsv"
+config["geno"]="1k1g_chr1:1000000-2000000_miss10.vcf.gz"
+config["missing_threshold"] = 1.0 # max missingness, 1= disabled
+config["workdir"] = "v2g_wd"
+
+def WD(path):
+    wd = config.get("workdir", "v2g_wd")
+    return f"{wd}/{path}"
+
+shell.prefix("export PATH=.opt/bin/:$PATH; set -xeuo pipefail; ")
+
+class Phenotypes:
+    def __init__(self, xsvfile):
+        series = {}
+        with open(xsvfile) as fh:
+            dialect = "excel" if xsvfile.endswith(".csv") else "excel-tab"
+            for row in csv.DictReader(fh, dialect=dialect):
+                if not series: # first row, set up lists
+                    series = {k: list() for k in row}
+                for k, v in row.items():
+                    series[k].append(v)
+        self.indivs = series['indiv']
+        self.phenos = {k: {I: v[i] for i, I in enumerate(self.indivs) } for k, v in series.items() if k != 'indiv'}
+        print(f"Parsed {len(self.indivs)} individuals and {len(self.phenos)} phenotypes")
+
+    def write_pheno(self, file, iorder=None, porder=None):
+        if iorder is None:
+            iorder = self.indivs
+        if porder is None:
+            porder = self.phenos
+        with open(file, "w") as fh:
+            print("FID", "IID", *list(self.phenos), sep="\t", file=fh)
+            for i in iorder:
+                print(i, i, *[self.phenos[n][i] for n in self.phenos], file=fh, sep="\t")
+
+    def rewrite_fam(self, famin, famout, porder=None):
+        with open(famin) as fh:
+            faml = fh.readlines()
+        if porder is None:
+            porder = self.phenos
+        with open(famout, "w") as fh:
+            for line in faml:
+                F = line.rstrip().split()
+                i = F[1]
+                print(*F[:5], *[self.phenos[n][i] for n in porder], file=fh, sep=" ")
+
+
+class Geno:
+    def __init__(self, vcf):
+        self.vcf = vcf
+        self.chroms = {}
+        with gzip.open(vcf, "rt") as fh:
+            for line in fh:
+                if not line.startswith("#"):
+                    break
+                if line.startswith("##contig="):
+                    chrom = re.search(r"ID=([^,]+)[,>]", line)
+                    if chrom:
+                        chrom = chrom.group(1)  # Extract the first match
+                    length = re.search(r"length=(\d+)[,>]", line)
+                    if length:
+                        length = int(length.group(1))  # Convert the first match to an integer
+                    if chrom:
+                        self.chroms[chrom] = length
+                if line.startswith("#CHROM"):
+                    self.indivs = line.rstrip().split("\t")[9:]
+
+
+PHENOTYPES=Phenotypes( config["pheno"] )
+INDS = PHENOTYPES.indivs
+PHENOS = list(PHENOTYPES.phenos)
+GENO = Geno(config["geno"])
+VCF_INDS = GENO.indivs
+if set(INDS) != set(VCF_INDS):
+    print("INDIVIDUALS MISMATCH!!")
+    print(INDS, VCF_INDS)
+    exit(1)
+
+
+rule all:
+    input:
+        WD("tmp/genotypes"),
+        WD("tmp/grm.cXX.txt"),
+        expand(WD("out/{pheno}.assoc.txt"), pheno=PHENOS),
+        WD("out/trait_pves.tsv"),
+
+
+rule vcf2plink:
+    input:
+        vcf=config["geno"],
+    output:
+        bed=WD("tmp/genotypes.bed"),
+        badfam=WD("tmp/genotypes.badfam"),
+        prefix=WD("tmp/genotypes"),
+    threads: 1
+    log: 
+        WD("tmp/genotypes.bed.log")
+    params:
+        missing_threshold=config["missing_threshold"],
+    shell:
+        "( plink"
+        "   --vcf {input.vcf}"
+        "   --out {output.prefix}"
+        "   --set-missing-var-ids '@:#'"
+        "   --mind {params.missing_threshold}" # max indiv missing rate
+        "   --allow-extra-chr"
+        "   --allow-no-sex"
+        "   --double-id"
+        "   --make-bed"
+        "   --biallelic-only"
+        "   --threads {threads}"
+        " && mv {output.prefix}.fam {output.prefix}.badfam"
+        " && touch {output.prefix})"
+        " >{log} 2>&1"
+
+rule update_fam:
+    input:
+        fam=WD("tmp/genotypes.badfam"),
+    output:
+        fam=WD("tmp/genotypes.fam"),
+    run:
+        PHENOTYPES.rewrite_fam(input.fam, output.fam, porder=PHENOS)
+
+
+rule grm:
+    input:
+        bfile=WD("tmp/genotypes"),
+        fam=WD("tmp/genotypes.fam"),
+    output:
+        grm=WD("tmp/grm.cXX.txt")
+    params:
+        dir=lambda wc, input, output: Path(output.grm).parent
+    shell:
+        "gemma"
+        "   -bfile {input.bfile}"
+        "   -o grm"
+        "   -outdir {params.dir}"
+        "   -gk 1"
+
+rule lmm:
+    input:
+        bfile=WD("tmp/genotypes"),
+        fam=WD("tmp/genotypes.fam"),
+        grm=WD("tmp/grm.cXX.txt")
+    output:
+        assoc=WD("out/{pheno}.assoc.txt"),
+        log=WD("out/{pheno}.gemma.log"),
+    params:
+        dir=lambda wc, input, output: Path(output.assoc).parent,
+        phenoi=lambda wc: PHENOS.index(wc.pheno)+1,
+        missing_threshold=config["missing_threshold"],
+    shell:
+        "( gemma"
+        "   -bfile {input.bfile}"
+        "   -o {wildcards.pheno}"
+        "   -outdir {params.dir}"
+        "   -k {input.grm}"
+        "   -lmm 4"
+        "   -miss {params.missing_threshold}"
+        "   -n {params.phenoi}"
+        ") >{output.log} 2>&1"
+
+
+rule heritability_table:
+    input:
+        expand(WD("out/{pheno}.gemma.log"), pheno=PHENOS),
+    output: WD("out/trait_pves.tsv")
+    run:
+        pves = {}        
+        for logfile in input:
+            pheno = re.sub(r".*/(.+)\.assoc.txt", r"\1", logfile)
+            pve=""
+            sepve=""
+            with open(logfile, encoding="utf-8") as fh:
+                for line in fh:
+                    m = re.search(r"pve estimate =([0-9.]+)", line.rstrip())
+                    if m:
+                        pve = float(m.group(1))
+                    m = re.search(r"se\(pve\) =([0-9.]+)", line.rstrip())
+                    if m:
+                        sepve = float(m.group(1))
+            pves[pheno] = (pve, sepve)
+        with open(output[0], "w") as fh:
+            print("pheno", "pve", "se(pve)", sep="\t", file=fh)
+            for pheno, (pve, sepve) in pves.items():
+                print(pheno, pve, sepve, sep="\t", file=fh)
+
+
+# Copyright 2024-2025 Kevin Murray/Gekkonid Scientific Pty. Ltd. 
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
