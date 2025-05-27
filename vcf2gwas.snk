@@ -1,14 +1,16 @@
+#-----------------------------------------------------------------------
+#-                    VCF2GWAS (snakemake edition)                     -
+#-----------------------------------------------------------------------
+# This file is not user-servicble, all settings are configured via the config file.
+
 from sys import exit
 import csv
 import gzip
-config = {}
-config["pheno"]="input/phenotypes_pathogen.tsv"
-config["geno"]="input/bwa~Har527-3_final~all_har.filt-q30-exhet90-callrate90.onlychr.impute.pathonamed.vcf.gz"
 
 def WD(path):
-    return f"v2g.wd/{path}"
+    return f"{config['workdir']}/{path}"
 
-shell.prefix="export PATH=.opt/bin/;"
+shell.prefix("export PATH=.opt/bin/;")
 
 class Phenotypes:
     def __init__(self, xsvfile):
@@ -22,7 +24,7 @@ class Phenotypes:
                     series[k].append(v)
         self.indivs = series['indiv']
         self.phenos = {k: {I: v[i] for i, I in enumerate(self.indivs) } for k, v in series.items() if k != 'indiv'}
-        #print(f"Parsed {len(self.indivs)} individuals and {len(self.phenos)} phenotypes")
+        print(f"Parsed {len(self.indivs)} individuals and {len(self.phenos)} phenotypes")
 
     def write_pheno(self, file, iorder=None, porder=None):
         if iorder is None:
@@ -67,7 +69,7 @@ class Geno:
                     self.indivs = line.rstrip().split("\t")[9:]
 
 
-PHENOTYPES=Phenotypes( config["pheno"] )
+PHENOTYPES=Phenotypes( config["phenotypes"] )
 INDS = PHENOTYPES.indivs
 PHENOS = list(PHENOTYPES.phenos)
 GENO = Geno(config["geno"])
@@ -80,9 +82,9 @@ if set(INDS) != set(VCF_INDS):
 
 rule all:
     input:
-        #expand(WD("tmp/phenos/{pheno}.fam"), pheno=PHENOS),
-        #expand(WD("tmp/{pheno}/grm.cXX.txt"), pheno=PHENOS),
-        #WD("tmp/phenos.txt"),
+        expand(WD("tmp/phenos/{pheno}.fam"), pheno=PHENOS),
+        expand(WD("tmp/{pheno}/grm.cXX.txt"), pheno=PHENOS),
+        WD("tmp/phenos.txt"),
         WD("tmp/genotypes"),
         WD("tmp/grm.cXX.txt"),
         expand(WD("out/{pheno}.assoc.txt"), pheno=PHENOS),
@@ -90,7 +92,7 @@ rule all:
 
 rule vcf2plink:
     input:
-        vcf=config["geno"],
+        vcf=config["vcf"],
     output:
         bed=WD("tmp/genotypes.bed"),
         badfam=WD("tmp/genotypes.badfam"),
