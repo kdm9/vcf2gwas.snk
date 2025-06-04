@@ -1,0 +1,5 @@
+phenotypes: "ath/ft16.tsv"
+vcf: "ath/ath_filt-MAC5-MISS20.vcf.gz"
+workdir: "v2g_wd"
+missing_threshold: 1.0
+
