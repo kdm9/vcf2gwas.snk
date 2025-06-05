@@ -6,12 +6,21 @@
 from sys import exit
 import csv
 import gzip
+import random
+from copy import deepcopy
 
 def WD(path):
     wd = config.get("workdir", "v2g_wd")
     return f"{wd}/{path}"
 
 shell.prefix("export PATH=.opt/bin/:$PATH; set -xeuo pipefail; ")
+
+def dictshuffle(d):
+    k = d.keys()
+    v = list(d.values())
+    random.shuffle(v)
+    return dict(zip(k, v))
+    
 
 class Phenotypes:
     def __init__(self, xsvfile):
@@ -26,7 +35,22 @@ class Phenotypes:
                     series[k].append(v)
         self.indivs = series['indiv']
         self.phenos = {k: {I: v[i] for i, I in enumerate(self.indivs) } for k, v in series.items() if k != 'indiv'}
+        self.nperm = int(float(config.get("permutations", 0)))
+        if self.nperm > 0:
+            self.permute_phenos()
         print(f"Parsed {len(self.indivs)} individuals and {len(self.phenos)} phenotypes")
+
+    def permute_phenos(self):
+        orig = deepcopy(self.phenos)
+        self.phenos = {
+            f"ORIG_{k}": v for k, v in orig.items()
+        }
+        random.seed(self.nperm)
+        for i in range(self.nperm):
+            self.phenos.update({
+                f"PERM{i}_{k}": dictshuffle(v) for k, v in orig.items()
+            })
+
 
     def write_pheno(self, file, iorder=None, porder=None):
         if iorder is None:
@@ -87,6 +111,7 @@ rule all:
         WD("tmp/genotypes"),
         WD("tmp/grm.cXX.txt"),
         expand(WD("out/{pheno}.assoc.txt"), pheno=PHENOS),
+        expand(WD("out/{pheno}.manhattan.png"), pheno=PHENOS),
         WD("out/trait_pves.tsv"),
 
 
@@ -121,6 +146,7 @@ rule vcf2plink:
 rule update_fam:
     input:
         fam=WD("tmp/genotypes.badfam"),
+        pheno= config["phenotypes"] ,
     output:
         fam=WD("tmp/genotypes.fam"),
     run:
@@ -165,6 +191,13 @@ rule lmm:
         "   -n {params.phenoi}"
         ") >{output.log} 2>&1"
 
+rule plotr:
+    input:
+        assoc=WD("out/{pheno}.assoc.txt"),
+    output:
+        assoc=WD("out/{pheno}.manhattan.png"),
+    shell:
+        "Rscript scripts/plot_gemma.R --output {output} {input}"
 
 rule heritability_table:
     input:
@@ -178,10 +211,10 @@ rule heritability_table:
             sepve=""
             with open(logfile, encoding="utf-8") as fh:
                 for line in fh:
-                    m = re.search(r"pve estimate =([0-9.]+)", line.rstrip())
+                    m = re.search(r"pve estimate =([0-9.e-]+)", line.rstrip())
                     if m:
                         pve = float(m.group(1))
-                    m = re.search(r"se\(pve\) =([0-9.]+)", line.rstrip())
+                    m = re.search(r"se\(pve\) =([0-9.e-]+)", line.rstrip())
                     if m:
                         sepve = float(m.group(1))
             pves[pheno] = (pve, sepve)
