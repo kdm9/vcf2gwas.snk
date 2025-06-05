@@ -1,3 +1,11 @@
+#!/bin/bash
+if [ ! -f ../.opt/bin/simu ]
+then
+    echo "ERROR: you need to run install_binaries.sh in the root of this repository first"
+    exit 1
+fi
+export PATH="$(realpath ../.opt/bin):$PATH"
+
 wget https://1001genomes.org/data/GMI-MPI/releases/v3.1/1001genomes_snp-short-indel_only_ACGTN.vcf.gz
 wget https://1001genomes.org/data/GMI-MPI/releases/v3.1/1001genomes_snp-short-indel_only_ACGTN.vcf.gz.md5
 md5sum -c 1001genomes_snp-short-indel_only_ACGTN.vcf.gz.md5
@@ -18,7 +26,6 @@ bcftools view  --no-version \
 ## simulate traits
 
 plink1.9 --make-bed --vcf ath_filt-MAC5-MISS20.vcf.gz --out ath_filt-MAC5-MISS20
-alias simu="../sim/simu_linux"
 simu --bfile ath_filt-MAC5-MISS20 --qt --causal-n 3 --hsq 0.5 --out ath_sim_h50
 simu --bfile ath_filt-MAC5-MISS20 --qt --causal-n 3 --hsq 0.25 --out ath_sim_h25
 simu --bfile ath_filt-MAC5-MISS20 --qt --causal-n 3 --hsq 0.1 --out ath_sim_h10

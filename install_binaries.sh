@@ -1,3 +1,5 @@
+#!/bin/bash
+set -eu
 mkdir -p .opt/bin .opt/tmp
 cd .opt/tmp
 curl -LSsO https://s3.amazonaws.com/plink1-assets/plink_linux_x86_64_20241022.zip
