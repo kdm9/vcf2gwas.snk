@@ -1,0 +1,6 @@
+phenotypes: "ath/simulated_phenos.tsv"
+vcf: "ath/ath_filt-MAC5-MISS20.vcf.gz"
+workdir: "v2g_wd_sim"
+missing_threshold: 1.0
+permutations: 0
+

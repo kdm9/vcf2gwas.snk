@@ -1,14 +1,26 @@
+#-----------------------------------------------------------------------
+#-                    VCF2GWAS (snakemake edition)                     -
+#-----------------------------------------------------------------------
+# This file is not user-servicble, all settings are configured via the config file.
+
 from sys import exit
 import csv
 import gzip
-config = {}
-config["pheno"]="input/phenotypes_pathogen.tsv"
-config["geno"]="input/bwa~Har527-3_final~all_har.filt-q30-exhet90-callrate90.onlychr.impute.pathonamed.vcf.gz"
+import random
+from copy import deepcopy
 
 def WD(path):
-    return f"v2g.wd/{path}"
+    wd = config.get("workdir", "v2g_wd")
+    return f"{wd}/{path}"
 
-shell.prefix="export PATH=.opt/bin/;"
+shell.prefix("export PATH=.opt/bin/:$PATH; set -xeuo pipefail; ")
+
+def dictshuffle(d):
+    k = d.keys()
+    v = list(d.values())
+    random.shuffle(v)
+    return dict(zip(k, v))
+    
 
 class Phenotypes:
     def __init__(self, xsvfile):
@@ -17,12 +29,28 @@ class Phenotypes:
             dialect = "excel" if xsvfile.endswith(".csv") else "excel-tab"
             for row in csv.DictReader(fh, dialect=dialect):
                 if not series: # first row, set up lists
+                    print(f"Read pheno file with columns: {row.keys()}")
                     series = {k: list() for k in row}
                 for k, v in row.items():
                     series[k].append(v)
         self.indivs = series['indiv']
         self.phenos = {k: {I: v[i] for i, I in enumerate(self.indivs) } for k, v in series.items() if k != 'indiv'}
-        #print(f"Parsed {len(self.indivs)} individuals and {len(self.phenos)} phenotypes")
+        self.nperm = int(float(config.get("permutations", 0)))
+        if self.nperm > 0:
+            self.permute_phenos()
+        print(f"Parsed {len(self.indivs)} individuals and {len(self.phenos)} phenotypes")
+
+    def permute_phenos(self):
+        orig = deepcopy(self.phenos)
+        self.phenos = {
+            f"ORIG_{k}": v for k, v in orig.items()
+        }
+        random.seed(self.nperm)
+        for i in range(self.nperm):
+            self.phenos.update({
+                f"PERM{i}_{k}": dictshuffle(v) for k, v in orig.items()
+            })
+
 
     def write_pheno(self, file, iorder=None, porder=None):
         if iorder is None:
@@ -30,7 +58,7 @@ class Phenotypes:
         if porder is None:
             porder = self.phenos
         with open(file, "w") as fh:
-            print("fid", "iid", *list(self.phenos), sep="\t", file=fh)
+            print("FID", "IID", *list(self.phenos), sep="\t", file=fh)
             for i in iorder:
                 print(i, i, *[self.phenos[n][i] for n in self.phenos], file=fh, sep="\t")
 
@@ -67,10 +95,10 @@ class Geno:
                     self.indivs = line.rstrip().split("\t")[9:]
 
 
-PHENOTYPES=Phenotypes( config["pheno"] )
+PHENOTYPES=Phenotypes( config["phenotypes"] )
 INDS = PHENOTYPES.indivs
 PHENOS = list(PHENOTYPES.phenos)
-GENO = Geno(config["geno"])
+GENO = Geno(config["vcf"])
 VCF_INDS = GENO.indivs
 if set(INDS) != set(VCF_INDS):
     print("INDIVIDUALS MISMATCH!!")
@@ -80,17 +108,16 @@ if set(INDS) != set(VCF_INDS):
 
 rule all:
     input:
-        #expand(WD("tmp/phenos/{pheno}.fam"), pheno=PHENOS),
-        #expand(WD("tmp/{pheno}/grm.cXX.txt"), pheno=PHENOS),
-        #WD("tmp/phenos.txt"),
         WD("tmp/genotypes"),
         WD("tmp/grm.cXX.txt"),
         expand(WD("out/{pheno}.assoc.txt"), pheno=PHENOS),
+        expand(WD("out/{pheno}.manhattan.png"), pheno=PHENOS),
+        WD("out/trait_pves.tsv"),
 
 
 rule vcf2plink:
     input:
-        vcf=config["geno"],
+        vcf=config["vcf"],
     output:
         bed=WD("tmp/genotypes.bed"),
         badfam=WD("tmp/genotypes.badfam"),
@@ -98,16 +125,19 @@ rule vcf2plink:
     threads: 1
     log: 
         WD("tmp/genotypes.bed.log")
+    params:
+        missing_threshold=config["missing_threshold"],
     shell:
         "( plink"
         "   --vcf {input.vcf}"
         "   --out {output.prefix}"
-        "   --mind 1" # max indiv missing rate
-        "   --set-missing-var-ids '@:#$1,$2'"
+        "   --set-missing-var-ids '@:#'"
+        "   --mind {params.missing_threshold}" # max indiv missing rate
         "   --allow-extra-chr"
         "   --allow-no-sex"
         "   --double-id"
         "   --make-bed"
+        "   --biallelic-only"
         "   --threads {threads}"
         " && mv {output.prefix}.fam {output.prefix}.badfam"
         " && touch {output.prefix})"
@@ -116,6 +146,7 @@ rule vcf2plink:
 rule update_fam:
     input:
         fam=WD("tmp/genotypes.badfam"),
+        pheno= config["phenotypes"] ,
     output:
         fam=WD("tmp/genotypes.fam"),
     run:
@@ -137,7 +168,6 @@ rule grm:
         "   -outdir {params.dir}"
         "   -gk 1"
 
-
 rule lmm:
     input:
         bfile=WD("tmp/genotypes"),
@@ -145,41 +175,53 @@ rule lmm:
         grm=WD("tmp/grm.cXX.txt")
     output:
         assoc=WD("out/{pheno}.assoc.txt"),
-	log=WD("out/{pheno}.gemma.log"),
+        log=WD("out/{pheno}.gemma.log"),
     params:
         dir=lambda wc, input, output: Path(output.assoc).parent,
         phenoi=lambda wc: PHENOS.index(wc.pheno)+1,
+        missing_threshold=config["missing_threshold"],
     shell:
-        "gemma"
+        "( gemma"
         "   -bfile {input.bfile}"
         "   -o {wildcards.pheno}"
         "   -outdir {params.dir}"
-        "   -n {params.phenoi}"
-        "   -lmm 4"
-        "   -miss 0.1"
         "   -k {input.grm}"
-        ">{output.log} 2>&1"
+        "   -lmm 4"
+        "   -miss {params.missing_threshold}"
+        "   -n {params.phenoi}"
+        ") >{output.log} 2>&1"
 
+rule plotr:
+    input:
+        assoc=WD("out/{pheno}.assoc.txt"),
+    output:
+        assoc=WD("out/{pheno}.manhattan.png"),
+    shell:
+        "Rscript scripts/plot_gemma.R --output {output} {input}"
 
 rule heritability_table:
     input:
-        expand(WD("out/{pheno}.assoc.txt"), pheno=PHENOS),
+        expand(WD("out/{pheno}.gemma.log"), pheno=PHENOS),
     output: WD("out/trait_pves.tsv")
     run:
         pves = {}        
         for logfile in input:
             pheno = re.sub(r".*/(.+)\.assoc.txt", r"\1", logfile)
             pve=""
+            sepve=""
             with open(logfile, encoding="utf-8") as fh:
                 for line in fh:
-                    m = re.match(r"pve estimate = (.+)", line.rstrip())
+                    m = re.search(r"pve estimate =([0-9.e-]+)", line.rstrip())
                     if m:
                         pve = float(m.group(1))
-            pves[pheno] = pve
+                    m = re.search(r"se\(pve\) =([0-9.e-]+)", line.rstrip())
+                    if m:
+                        sepve = float(m.group(1))
+            pves[pheno] = (pve, sepve)
         with open(output[0], "w") as fh:
-            print("pheno", "pve", sep="\t", file=fh)
-            for pheno, pve in pves.items():
-                print(pheno, pve, sep="\t", file=fh)
+            print("pheno", "pve", "se(pve)", sep="\t", file=fh)
+            for pheno, (pve, sepve) in pves.items():
+                print(pheno, pve, sepve, sep="\t", file=fh)
 
 
 # Copyright 2024-2025 Kevin Murray/Gekkonid Scientific Pty. Ltd. 
