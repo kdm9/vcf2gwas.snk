@@ -15,9 +15,9 @@ curl -LSsO https://github.com/precimed/simu/releases/download/v0.9.2/simu_linux
 mv simu_linux ../bin/simu
 chmod +x ../bin/simu
 
-curl -LSsO https://yanglab.westlake.edu.cn/software/gcta/bin/gcta-1.94.3-linux-kernel-3-x86_64.zip
-unzip -q gcta-1.94.3-linux-kernel-3-x86_64.zip
-mv  gcta-1.94.3-linux-kernel-3-x86_64/gcta64 ../bin/gcta64
+curl -LSsO https://yanglab.westlake.edu.cn/software/gcta/bin/gcta-1.95.0-linux-kernel-3-x86_64.zip
+unzip -q gcta-1.95.0-linux-kernel-3-x86_64.zip
+mv  gcta-1.95.0-linux-kernel-3-x86_64/gcta64 ../bin/gcta64
 
 curl -LSsO https://github.com/shenwei356/csvtk/releases/download/v0.32.0/csvtk_linux_amd64.tar.gz
 tar xf csvtk_linux_amd64.tar.gz
