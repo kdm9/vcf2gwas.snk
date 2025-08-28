@@ -102,7 +102,10 @@ GENO = Geno(config["vcf"])
 VCF_INDS = GENO.indivs
 if set(INDS) != set(VCF_INDS):
     print("INDIVIDUALS MISMATCH!!")
-    print(INDS, VCF_INDS)
+    print("Not in VCF:")
+    print("\n".join([x for x in INDS if x not in VCF_INDS])
+    print("Not in PHENO:")
+    print("\n".join([x for x in VCF_INDS if x not in INDS])
     exit(1)
 
 
