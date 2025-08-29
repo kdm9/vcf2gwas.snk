@@ -154,6 +154,7 @@ rule vcf2plink:
         "   --make-bed"
         "   --biallelic-only"
         "   --threads {threads}"
+        "   --vcf-half-call missing"
         " && mv {output.prefix}.fam {output.prefix}.badfam"
         " && touch {output.prefix})"
         " >{log} 2>&1"
